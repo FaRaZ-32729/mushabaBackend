@@ -1,3 +1,5 @@
+const bcrypt = require('bcryptjs');
+const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/userSchema");
 
 require("dotenv").config();
@@ -391,7 +393,7 @@ const updatePassword = async (req, res) => {
 }
 
 // Forgot Password - Request Rest Password
-const forgetPassword = async (req, res) => {
+const forgetPasswordRequest = async (req, res) => {
     try {
         const { email } = req.body;
         if (!email) {
@@ -511,7 +513,7 @@ module.exports = {
     login,
     verifiedUser,
     updatePassword,
-    forgetPassword,
+    forgetPasswordRequest,
     verifyCode,
     resetPassword
 }
