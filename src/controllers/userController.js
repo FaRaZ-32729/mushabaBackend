@@ -1,13 +1,35 @@
 const bcrypt = require("bcryptjs");
 const QRCode = require('qrcode');
-const Connection = require('../models/Connection');
+const Connection = require('../models/connectionSchema');
 const { createNotification } = require('./notificationController');
 const User = require("../models/userSchema");
+
+// Get all users
+const getAllUsers = async (req, res) => {
+    try {
+        const users = await User.find()
+            .select('-password')
+            .sort({ name: 1 });
+
+        res.json({
+            success: true,
+            users
+        });
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error fetching users'
+        });
+    }
+};
 
 // Get user by ID
 const getUserById = async (req, res) => {
     try {
-        const user = await User.findById(req.params.id).select('-password');
+        const user = await User.findById(req.params.userId)
+            .select('-password');
+
         if (!user) {
             return res.status(404).json({
                 success: false,
@@ -15,35 +37,26 @@ const getUserById = async (req, res) => {
             });
         }
 
-        // Generate QR code data URL
-        const qrCodeDataUrl = await QRCode.toDataURL(user._id.toString());
-
         res.json({
             success: true,
-            user: {
-                _id: user._id,
-                name: user.name,
-                username: user.username,
-                image: user.image,
-                qrCode: qrCodeDataUrl
-            }
+            user
         });
     } catch (error) {
         console.error('Error fetching user:', error);
         res.status(500).json({
             success: false,
-            message: 'Error fetching user data'
+            message: 'Error fetching user'
         });
     }
 };
 
-// Update user
-const updateUser = async (req, res) => {
+// Update user profile
+const updateProfile = async (req, res) => {
     try {
-        const { name, username, oldPassword, newPassword } = req.body;
-        const userId = req.params.id;
+        const { name, username, oldPassword, newPassword, image, phone, nationality } = req.body;
+        const userId = req.user.id;
 
-        // Find user
+        // Find user with password field explicitly selected
         const user = await User.findById(userId).select('+password');
         if (!user) {
             return res.status(404).json({
@@ -55,7 +68,7 @@ const updateUser = async (req, res) => {
         // If updating password
         if (oldPassword && newPassword) {
             // Verify old password
-            const isMatch = await bcrypt.compare(oldPassword, user.password);
+            const isMatch = await user.comparePassword(oldPassword);
             if (!isMatch) {
                 return res.status(401).json({
                     success: false,
@@ -63,9 +76,9 @@ const updateUser = async (req, res) => {
                 });
             }
 
-            // Hash new password
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(newPassword, salt);
+            // Set new password and mark it as modified
+            user.password = newPassword;
+            user.markModified('password');
         }
 
         // Update other fields
@@ -103,12 +116,25 @@ const updateUser = async (req, res) => {
             user.username = username.trim();
         }
 
-        // If username is being updated, generate new QR code
-        if (username) {
-            const qrCodeDataUrl = await QRCode.toDataURL(user._id.toString());
-            user.qrCode = qrCodeDataUrl;
+        if (image) {
+            user.image = image;
         }
 
+        if (phone !== undefined) {
+            user.phone = phone;
+        }
+
+        if (nationality) {
+            if (!nationality.trim()) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Nationality cannot be empty'
+                });
+            }
+            user.nationality = nationality.trim();
+        }
+
+        // Save updated user
         await user.save();
 
         // Return updated user without password
@@ -118,75 +144,41 @@ const updateUser = async (req, res) => {
             user: updatedUser
         });
     } catch (error) {
-        console.error('Error updating user:', error);
+        console.error('Error updating profile:', error);
         res.status(500).json({
             success: false,
-            message: 'Error updating user',
-            error: error.message
+            message: 'Error updating profile'
         });
     }
 };
 
-const updateProfile = async (req, res) => {
+// Update user status
+const updateUserStatus = async (req, res) => {
     try {
-        const { name, username, oldPassword, newPassword } = req.body;
-        const userId = req.params.userId;
+        const { status } = req.body;
+        const user = await User.findByIdAndUpdate(
+            req.user.id,
+            { status },
+            { new: true }
+        ).select('-password');
 
-        // Find user by ID
-        const user = await User.findById(userId);
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'User not found' });
-        }
+        // Emit socket event for status update
+        const io = req.app.get('io');
+        io.emit('userStatus', {
+            userId: user._id,
+            status
+        });
 
-        // Update name if provided and different
-        if (name !== undefined && name !== user.name) {
-            if (!name.trim()) {
-                return res.status(400).json({ success: false, message: 'Name cannot be empty' });
-            }
-            user.name = name.trim();
-        }
-
-        // Update username if provided and different
-        if (username !== undefined && username !== user.username) {
-            if (!username.trim()) {
-                return res.status(400).json({ success: false, message: 'Username cannot be empty' });
-            }
-            // Check if new username is already taken by another user
-            const existingUser = await User.findOne({ username: username.trim() });
-            if (existingUser && existingUser._id.toString() !== userId) {
-                return res.status(400).json({ success: false, message: 'Username already taken' });
-            }
-            user.username = username.trim();
-        }
-
-        // If password is being updated
-        if (oldPassword && newPassword) {
-            // Verify old password
-            const isMatch = await bcrypt.compare(oldPassword, user.password);
-            if (!isMatch) {
-                return res.status(401).json({ success: false, message: 'Current password is incorrect' });
-            }
-
-            // Hash new password
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(newPassword, salt);
-        }
-
-        // Save updated user
-        await user.save();
-
-        // Return updated user info (excluding password)
         res.json({
             success: true,
-            user: {
-                _id: user._id,
-                username: user.username,
-                name: user.name
-            }
+            user
         });
     } catch (error) {
-        console.error('Profile update error:', error);
-        res.status(500).json({ success: false, message: 'Error updating profile' });
+        console.error('Error updating status:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Error updating status'
+        });
     }
 };
 
@@ -321,8 +313,9 @@ const checkUserStatus = async (req, res) => {
 };
 
 module.exports = {
+    getAllUsers,
     getUserById,
-    updateUser,
+    updateUserStatus,
     updateProfile,
     deleteUser,
     checkUserStatus
