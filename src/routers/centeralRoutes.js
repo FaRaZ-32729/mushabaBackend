@@ -13,6 +13,7 @@ const meshRoutes = require("./meshRoutes");
 const speechRoute = require("./speechRoute");
 const translateRoutes = require("./translateRoutes");
 const ttsRoutes = require("./ttsRoutes");
+const pipelineRoutes = require("./pipelineRoutes");
 
 const router = express.Router();
 
@@ -32,5 +33,6 @@ router.use("/mesh", meshRoutes);
 router.use("/stt", speechRoute);
 router.use("/translate", translateRoutes);
 router.use("/tts", ttsRoutes);
+router.use("/pipeline", pipelineRoutes);
 
 module.exports = router;
