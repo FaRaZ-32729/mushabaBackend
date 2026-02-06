@@ -8,6 +8,7 @@ const messageRoutes = require("./messageRoutes");
 const uploadRoutes = require("./uploadRoutes");
 const locationRoutes = require("./locationRoutes");
 const pinLocationRoutes = require("./pinLocationRoutes");
+const personalPinLocationRoutes = require("./personalPinLocationRoutes");
 
 const router = express.Router();
 
@@ -20,5 +21,6 @@ router.use("/messages", messageRoutes);
 router.use("/upload", uploadRoutes);
 router.use("/location", locationRoutes);
 router.use("/pin-locations", pinLocationRoutes);
+router.use("/personal-pin-locations", personalPinLocationRoutes);
 
 module.exports = router;
