@@ -6,6 +6,8 @@ const notificationRoutes = require("./notificationRoutes");
 const chatRoutes = require("./chatRoutes");
 const messageRoutes = require("./messageRoutes");
 const uploadRoutes = require("./uploadRoutes");
+const locationRoutes = require("./locationRoutes");
+const pinLocationRoutes = require("./pinLocationRoutes");
 
 const router = express.Router();
 
@@ -16,5 +18,7 @@ router.use("/notifications", notificationRoutes);
 router.use("/chats", chatRoutes);
 router.use("/messages", messageRoutes);
 router.use("/upload", uploadRoutes);
+router.use("/location", locationRoutes);
+router.use("/pin-locations", pinLocationRoutes);
 
 module.exports = router;

@@ -1,14 +1,10 @@
-const Connection = require('../models/Connection');
-const User = require('../models/User');
-const { ConnectionLocation } = require('../models/Location');
 const fs = require('fs').promises;
 const path = require('path');
 const mongoose = require('mongoose');
+const Connection = require('../models/connectionSchema');
+const { ConnectionLocation } = require('../models/locationSchema');
+const User = require('../models/userSchema');
 
-// Log model imports for debugging
-console.log('[LOCATION_CONTROLLER] ConnectionLocation model imported:', !!ConnectionLocation);
-console.log('[LOCATION_CONTROLLER] ConnectionLocation model type:', typeof ConnectionLocation);
-console.log('[LOCATION_CONTROLLER] ConnectionLocation model name:', ConnectionLocation?.modelName);
 
 // In-memory storage for user locations (for real-time updates)
 const userLocations = {};
@@ -16,33 +12,523 @@ const userLocations = {};
 // Memory cleanup configuration - PER USER timeout
 const MEMORY_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes per user
 
-// Enhanced memory cleanup function to remove only stale user data
-const cleanupStaleMemoryLocations = () => {
-    const now = Date.now();
-    let cleanedCount = 0;
-    let activeUsers = 0;
 
-    Object.keys(userLocations).forEach(userId => {
-        const location = userLocations[userId];
-        if (location && location.lastUpdated) {
-            const timeSinceUpdate = now - location.lastUpdated;
+// Helper function to create uploads directory
+const createUploadsDirectory = async () => {
+    const uploadsDir = path.join(__dirname, '../uploads/locations');
+    try {
+        await fs.mkdir(uploadsDir, { recursive: true });
+    } catch (error) {
+        if (error.code !== 'EEXIST') {
+            throw error;
+        }
+    }
+};
 
-            if (timeSinceUpdate > MEMORY_TIMEOUT_MS) {
-                // Only remove users who haven't sent updates in 2+ minutes
-                delete userLocations[userId];
-                cleanedCount++;
-                console.log(`[MEMORY_CLEANUP] Cleaned stale location for user ${userId} (${Math.round(timeSinceUpdate / 1000)}s old)`);
-            } else {
-                activeUsers++;
-                console.log(`[MEMORY_CLEANUP] User ${userId} still active (${Math.round(timeSinceUpdate / 1000)}s since last update)`);
+/**
+ * Mark personal location (overrides group for the user)
+ */
+const markPersonalLocation = async (connection, userId, locationData, files) => {
+    const { type, name, latitude, longitude, comment, distance } = locationData;
+
+    // Remove existing personal location of same type
+    connection.markedLocations = connection.markedLocations.filter(
+        loc => !(loc.scope.type === 'personal' && loc.scope.userId.toString() === userId && loc.type === type)
+    );
+
+    // Add new personal location
+    const newLocation = {
+        type,
+        name,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        comment,
+        distance: parseFloat(distance) || 0,
+        images: files ? files.map(file => file.filename) : [],
+        markedBy: userId,
+        isOwnerMarked: false,
+        isPersonalMarked: true,
+        scope: {
+            type: 'personal',
+            userId: userId,
+            isOwnerPersonal: false
+        },
+        markedAt: new Date(),
+        updatedAt: new Date()
+    };
+
+    connection.markedLocations.push(newLocation);
+    await connection.save();
+
+    console.log(`[PERSONAL_MARK] Marked personal ${type} for user ${userId}`);
+};
+
+/**
+ * Mark group location (owner's choice for all members)
+ */ // done
+const markGroupLocation = async (connection, userId, locationData, files) => {
+    const { type, name, latitude, longitude, comment, distance } = locationData;
+
+    // Remove existing group location of same type
+    connection.markedLocations = connection.markedLocations.filter(
+        loc => !(loc.scope.type === 'group' && loc.type === type)
+    );
+
+    // Add new group location
+    const newLocation = {
+        type,
+        name,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        comment,
+        distance: parseFloat(distance) || 0,
+        images: files ? files.map(file => file.filename) : [],
+        markedBy: userId,
+        isOwnerMarked: true,
+        isPersonalMarked: false,
+        scope: {
+            type: 'group',
+            userId: null,
+            isOwnerPersonal: true // Owner's group location is also their personal
+        },
+        markedAt: new Date(),
+        updatedAt: new Date()
+    };
+
+    connection.markedLocations.push(newLocation);
+    await connection.save();
+
+    console.log(`[GROUP_MARK] Marked group ${type} by owner ${userId}`);
+};
+
+/**
+ * Sync all users' cache for a connection
+ */
+const syncAllUsersCache = async (connectionId) => {
+    try {
+        const connection = await Connection.findById(connectionId);
+        if (!connection) return;
+
+        const groupLocations = connection.markedLocations.filter(loc => loc.scope.type === 'group');
+        const busLocation = groupLocations.find(loc => loc.type === 'bus_station');
+        const hotelLocation = groupLocations.find(loc => loc.type === 'hotel');
+
+        // Update all users in the connection
+        for (const userInConnection of connection.users) {
+            const userId = userInConnection.userId;
+            const isOwner = userInConnection.role === 'owner';
+
+            // Get user's personal locations
+            const personalLocations = connection.markedLocations.filter(loc =>
+                loc.scope.type === 'personal' && loc.scope.userId.toString() === userId.toString()
+            );
+            const personalBus = personalLocations.find(loc => loc.type === 'bus_station');
+            const personalHotel = personalLocations.find(loc => loc.type === 'hotel');
+
+            // Determine active locations based on priority
+            const activeBus = personalBus || busLocation;
+            const activeHotel = personalHotel || hotelLocation;
+
+            // Update user's cache
+            await User.findByIdAndUpdate(userId, {
+                $set: {
+                    'activeLocations.busStation': {
+                        name: activeBus?.name || "Unmarked",
+                        latitude: activeBus?.latitude || null,
+                        longitude: activeBus?.longitude || null,
+                        source: personalBus ? 'personal' : (busLocation ? 'group' : 'unmarked'),
+                        locationId: activeBus?._id || null,
+                        connectionId: connectionId,
+                        isMarked: !!activeBus,
+                        lastUpdated: new Date()
+                    },
+                    'activeLocations.hotel': {
+                        name: activeHotel?.name || "Unmarked",
+                        roomNumber: activeHotel?.roomNumber || null,
+                        latitude: activeHotel?.latitude || null,
+                        longitude: activeHotel?.longitude || null,
+                        source: personalHotel ? 'personal' : (hotelLocation ? 'group' : 'unmarked'),
+                        locationId: activeHotel?._id || null,
+                        connectionId: connectionId,
+                        isMarked: !!activeHotel,
+                        lastUpdated: new Date()
+                    }
+                }
+            });
+        }
+
+        console.log(`[CACHE_SYNC] Updated cache for all users in connection ${connectionId}`);
+
+    } catch (error) {
+        console.error('[CACHE_SYNC] Error:', error);
+    }
+};
+
+/**
+ * Mark a location (enhanced with personal/group logic)
+ */
+const markLocation = async (req, res) => {
+    try {
+        await createUploadsDirectory();
+
+        const {
+            connectionId,
+            type,
+            name,
+            latitude,
+            longitude,
+            comment,
+            distance,
+            isPersonal
+        } = req.body;
+
+        // Convert string to boolean for FormData
+        const isPersonalMarking = isPersonal === 'true' || isPersonal === true;
+        const userId = req.user.id;
+
+        console.log('[ENHANCED_MARK_LOCATION] Request received:', {
+            connectionId,
+            type,
+            name,
+            latitude,
+            longitude,
+            comment,
+            distance,
+            userId,
+            isPersonal: isPersonalMarking
+        });
+
+        // Validate required fields
+        if (!connectionId || !type || !name || !latitude || !longitude || !comment) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields'
+            });
+        }
+
+        // Validate images upload (optional, but if provided, max 1 image)
+        if (req.files && req.files.length > 1) {
+            return res.status(400).json({
+                success: false,
+                message: 'Maximum 1 image allowed'
+            });
+        }
+
+        // Find the connection
+        const connection = await Connection.findById(connectionId);
+        if (!connection) {
+            return res.status(404).json({
+                success: false,
+                message: 'Connection not found'
+            });
+        }
+
+        // Verify user is in connection
+        const userInConnection = connection.users.find(
+            u => u.userId.toString() === userId && u.status === 'active'
+        );
+        if (!userInConnection) {
+            return res.status(403).json({
+                success: false,
+                message: 'User not found in connection'
+            });
+        }
+
+        const isOwner = userInConnection.role === 'owner';
+
+        // Process marking based on type and user role
+        if (isPersonalMarking) {
+            // Personal marking - both owner and members can do this
+            await markPersonalLocation(connection, userId, req.body, req.files);
+        } else {
+            // Group marking - only owner allowed
+            if (!isOwner) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Only connection owner can mark group locations'
+                });
+            }
+            await markGroupLocation(connection, userId, req.body, req.files);
+        }
+
+        // Sync to all users' cache
+        await syncAllUsersCache(connectionId);
+
+        res.json({
+            success: true,
+            message: 'Location marked successfully',
+            isPersonal,
+            isOwner
+        });
+
+    } catch (error) {
+        console.error('[ENHANCED_MARK_LOCATION] Error:', error);
+
+        // Clean up uploaded files if there was an error
+        if (req.files && req.files.length > 0) {
+            try {
+                await Promise.all(req.files.map(file => fs.unlink(file.path)));
+            } catch (unlinkError) {
+                console.error('[ENHANCED_MARK_LOCATION] Error deleting files:', unlinkError);
             }
         }
+
+        res.status(500).json({
+            success: false,
+            message: 'Failed to mark location'
+        });
+    }
+};
+
+/**
+ * Get active locations for a user based on priority
+ */
+const getActiveLocationsForUser = (connection, userId, isOwner) => {
+    const locations = [];
+
+    // For each location type (bus_station, hotel)
+    ['bus_station', 'hotel'].forEach(type => {
+        const personalLocation = connection.markedLocations.find(loc =>
+            loc.scope.type === 'personal' &&
+            loc.scope.userId.toString() === userId &&
+            loc.type === type
+        );
+
+        const groupLocation = connection.markedLocations.find(loc =>
+            loc.scope.type === 'group' && loc.type === type
+        );
+
+        let activeLocation;
+        if (isOwner) {
+            // Owner always sees group location (which is their personal too)
+            if (groupLocation) {
+                activeLocation = {
+                    _id: groupLocation._id,
+                    type: groupLocation.type,
+                    name: groupLocation.name,
+                    latitude: groupLocation.latitude,
+                    longitude: groupLocation.longitude,
+                    comment: groupLocation.comment,
+                    distance: groupLocation.distance,
+                    images: groupLocation.images,
+                    markedBy: groupLocation.markedBy,
+                    markedAt: groupLocation.markedAt,
+                    updatedAt: groupLocation.updatedAt,
+                    source: 'group',
+                    isMarked: true
+                };
+            } else {
+                activeLocation = {
+                    name: "Unmarked",
+                    source: "unmarked",
+                    isMarked: false
+                };
+            }
+        } else {
+            // Member priority: Personal > Group > Unmarked
+            if (personalLocation) {
+                activeLocation = {
+                    _id: personalLocation._id,
+                    type: personalLocation.type,
+                    name: personalLocation.name,
+                    latitude: personalLocation.latitude,
+                    longitude: personalLocation.longitude,
+                    comment: personalLocation.comment,
+                    distance: personalLocation.distance,
+                    images: personalLocation.images,
+                    markedBy: personalLocation.markedBy,
+                    markedAt: personalLocation.markedAt,
+                    updatedAt: personalLocation.updatedAt,
+                    source: 'personal',
+                    isMarked: true
+                };
+            } else if (groupLocation) {
+                activeLocation = {
+                    _id: groupLocation._id,
+                    type: groupLocation.type,
+                    name: groupLocation.name,
+                    latitude: groupLocation.latitude,
+                    longitude: groupLocation.longitude,
+                    comment: groupLocation.comment,
+                    distance: groupLocation.distance,
+                    images: groupLocation.images,
+                    markedBy: groupLocation.markedBy,
+                    markedAt: groupLocation.markedAt,
+                    updatedAt: groupLocation.updatedAt,
+                    source: 'group',
+                    isMarked: true
+                };
+            } else {
+                activeLocation = {
+                    name: "Unmarked",
+                    source: "unmarked",
+                    isMarked: false
+                };
+            }
+        }
+
+        locations.push(activeLocation);
     });
 
-    if (cleanedCount > 0) {
-        console.log(`[MEMORY_CLEANUP] Total cleaned: ${cleanedCount} stale entries, ${activeUsers} active users remain`);
-    } else {
-        console.log(`[MEMORY_CLEANUP] No stale entries found, ${activeUsers} active users in memory`);
+    return locations;
+};
+
+/**
+ * Get marked locations for a connection (with priority logic)
+ */
+const getMarkedLocationEnhanced = async (req, res) => {
+    try {
+        const { connectionId } = req.params;
+        const userId = req.user.id;
+
+        const connection = await Connection.findById(connectionId);
+        if (!connection) {
+            return res.status(404).json({
+                success: false,
+                message: 'Connection not found'
+            });
+        }
+
+        // Verify user is in connection
+        const userInConnection = connection.users.find(
+            u => u.userId.toString() === userId && u.status === 'active'
+        );
+        if (!userInConnection) {
+            return res.status(403).json({
+                success: false,
+                message: 'User not found in connection'
+            });
+        }
+
+        const isOwner = userInConnection.role === 'owner';
+
+        // Get active locations based on priority
+        const activeLocations = getActiveLocationsForUser(connection, userId, isOwner);
+
+        res.json({
+            success: true,
+            locations: activeLocations,
+            isOwner
+        });
+
+    } catch (error) {
+        console.error('[GET_MARKED_LOCATIONS] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get marked locations'
+        });
+    }
+};
+
+/**
+ * Use personal location as group location
+ */
+const usePersonalAsGroup = async (connection, newOwnerId, type) => {
+    // Find new owner's personal location
+    const personalLocation = connection.markedLocations.find(loc =>
+        loc.scope.type === 'personal' &&
+        loc.scope.userId.toString() === newOwnerId &&
+        loc.type === type
+    );
+
+    if (personalLocation) {
+        // Remove old group location
+        connection.markedLocations = connection.markedLocations.filter(
+            loc => !(loc.scope.type === 'group' && loc.type === type)
+        );
+
+        // Convert personal to group
+        personalLocation.scope.type = 'group';
+        personalLocation.scope.userId = null;
+        personalLocation.markedBy = newOwnerId;
+        personalLocation.isOwnerMarked = true;
+        personalLocation.isPersonalMarked = false;
+        personalLocation.updatedAt = new Date();
+    }
+};
+
+/**
+ * Keep previous group location
+ */
+const keepPreviousAsGroup = async (connection, newOwnerId, type) => {
+    // Remove new owner's personal location
+    connection.markedLocations = connection.markedLocations.filter(
+        loc => !(loc.scope.type === 'personal' && loc.scope.userId.toString() === newOwnerId && loc.type === type)
+    );
+
+    // Update group location ownership
+    const groupLocation = connection.markedLocations.find(loc =>
+        loc.scope.type === 'group' && loc.type === type
+    );
+
+    if (groupLocation) {
+        groupLocation.markedBy = newOwnerId;
+        groupLocation.updatedAt = new Date();
+    }
+};
+
+/**
+ * Handle ownership transfer with conflict resolution
+ */
+const handleOwnershipTransfer = async (req, res) => {
+    try {
+        const { connectionId, newOwnerId, choices } = req.body;
+        const currentUserId = req.user.id;
+
+        const connection = await Connection.findById(connectionId);
+        if (!connection) {
+            return res.status(404).json({
+                success: false,
+                message: 'Connection not found'
+            });
+        }
+
+        // Verify current user is owner
+        const currentUser = connection.users.find(u => u.userId.toString() === currentUserId);
+        if (!currentUser || currentUser.role !== 'owner') {
+            return res.status(403).json({
+                success: false,
+                message: 'Only current owner can transfer ownership'
+            });
+        }
+
+        // Process choices for each location type
+        if (choices.bus === 'personal') {
+            await usePersonalAsGroup(connection, newOwnerId, 'bus_station');
+        } else {
+            await keepPreviousAsGroup(connection, newOwnerId, 'bus_station');
+        }
+
+        if (choices.hotel === 'personal') {
+            await usePersonalAsGroup(connection, newOwnerId, 'hotel');
+        } else {
+            await keepPreviousAsGroup(connection, newOwnerId, 'hotel');
+        }
+
+        // Update roles
+        currentUser.role = 'member';
+        const newOwner = connection.users.find(u => u.userId.toString() === newOwnerId);
+        if (newOwner) {
+            newOwner.role = 'owner';
+        }
+
+        await connection.save();
+
+        // Sync all users' cache
+        await syncAllUsersCache(connectionId);
+
+        res.json({
+            success: true,
+            message: 'Ownership transferred successfully',
+            choices
+        });
+
+    } catch (error) {
+        console.error('[OWNERSHIP_TRANSFER] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to transfer ownership'
+        });
     }
 };
 
@@ -53,137 +539,6 @@ const shouldUseMemoryForUser = (userId) => {
 
     const timeSinceUpdate = Date.now() - userLocation.lastUpdated;
     return timeSinceUpdate <= MEMORY_TIMEOUT_MS;
-};
-
-// NEW: Get user location with intelligent source selection
-const getUserLocationWithFallback = async (userId) => {
-    // First check if user has fresh data in memory
-    if (shouldUseMemoryForUser(userId)) {
-        console.log(`[LOCATION_SOURCE] User ${userId} using memory (fresh data)`);
-        return {
-            location: userLocations[userId],
-            source: 'memory',
-            isStale: false
-        };
-    }
-
-    // If not in memory or stale, try database
-    try {
-        const connectionLocation = await ConnectionLocation.findOne({
-            'users.userId': userId
-        });
-
-        if (connectionLocation) {
-            const userInConnection = connectionLocation.users.find(
-                user => user.userId.toString() === userId
-            );
-
-            if (userInConnection && userInConnection.currentLocation) {
-                const dbLocation = userInConnection.currentLocation;
-                const isStale = Date.now() - new Date(dbLocation.lastUpdated).getTime() > MEMORY_TIMEOUT_MS;
-
-                console.log(`[LOCATION_SOURCE] User ${userId} using database (${isStale ? 'stale' : 'recent'} data)`);
-                return {
-                    location: {
-                        latitude: dbLocation.latitude,
-                        longitude: dbLocation.longitude,
-                        floor: dbLocation.floor,
-                        lastUpdated: dbLocation.lastUpdated,
-                        online: dbLocation.online
-                    },
-                    source: 'database',
-                    isStale: isStale
-                };
-            }
-        }
-    } catch (dbError) {
-        console.log(`[LOCATION_SOURCE] Database lookup failed for user ${userId}:`, dbError.message);
-    }
-
-    console.log(`[LOCATION_SOURCE] User ${userId} no location data found`);
-    return null;
-};
-
-// Create uploads/locations directory if it doesn't exist
-const createUploadsDirectory = async () => {
-    try {
-        await fs.access('uploads/locations');
-    } catch (error) {
-        await fs.mkdir('uploads/locations', { recursive: true });
-    }
-};
-
-// Get all user locations from memory
-const getUserLocations = () => {
-    return userLocations;
-};
-
-// Update user location in memory AND database (ENHANCED with automatic memory promotion)
-const updateUserLocation = async (userId, locationData, connectionId = null) => {
-    console.log('[UPDATE_USER_LOCATION] Updating location for user:', userId, 'with data:', locationData);
-    console.log('[UPDATE_USER_LOCATION] ConnectionId received:', connectionId);
-
-    try {
-        // Check if user was previously in database fallback mode
-        const wasInDatabaseFallback = !userLocations[userId] || !shouldUseMemoryForUser(userId);
-
-        // 1. Update in-memory cache (this automatically promotes user back to memory)
-        userLocations[userId] = {
-            ...locationData,
-            lastUpdated: Date.now(),
-            online: true
-        };
-
-        if (wasInDatabaseFallback) {
-            console.log(`[UPDATE_USER_LOCATION] User ${userId} promoted back to memory from database fallback`);
-        } else {
-            console.log(`[UPDATE_USER_LOCATION] User ${userId} updated in memory (was already active)`);
-        }
-
-        console.log('[UPDATE_USER_LOCATION] Updated userLocations object:', Object.keys(userLocations));
-        console.log('[UPDATE_USER_LOCATION] User location stored:', userLocations[userId]);
-
-        // 2. Update database with connectionId from frontend (more efficient)
-        if (connectionId) {
-            console.log('[UPDATE_USER_LOCATION] Attempting database storage with connectionId:', connectionId);
-            await updateUserLocationInConnectionDB(userId, connectionId, locationData);
-            console.log('[UPDATE_USER_LOCATION] Location stored in database with connectionId:', connectionId);
-        } else {
-            console.log('[UPDATE_USER_LOCATION] No connectionId provided, skipping database storage');
-        }
-
-        // 3. Broadcast location update to all users in the connection via socket
-        if (connectionId && global.io) {
-            try {
-                const broadcastData = {
-                    userId: userId,
-                    latitude: locationData.latitude || locationData.lat,
-                    longitude: locationData.longitude || locationData.lng,
-                    online: true,
-                    lastUpdated: userLocations[userId].lastUpdated,
-                    connectionId: connectionId
-                };
-
-                console.log('[SOCKET_BROADCAST] Broadcasting location update:', broadcastData);
-                console.log('[SOCKET_DEBUG] Global IO instance available:', !!global.io);
-                console.log('[SOCKET_DEBUG] Global IO engine clients count:', global.io?.engine?.clientsCount);
-                global.io.to(`connection:${connectionId}`).emit('locationUpdate', broadcastData);
-                console.log('[SOCKET_BROADCAST] Location update broadcasted successfully');
-            } catch (socketError) {
-                console.error('[SOCKET_BROADCAST] Error broadcasting location update:', socketError);
-            }
-        } else {
-            console.log('[SOCKET_BROADCAST] Skipping broadcast - no connectionId or io not available');
-        }
-
-    } catch (error) {
-        console.error('[UPDATE_USER_LOCATION] Database update failed, but memory update succeeded:', error);
-        console.error('[UPDATE_USER_LOCATION] Error details:', error.message);
-        console.error('[UPDATE_USER_LOCATION] Error stack:', error.stack);
-        // Continue with memory update even if DB fails (backward compatibility)
-    }
-
-    return userLocations[userId];
 };
 
 // NEW: Ensure ConnectionLocation document exists for a connection
@@ -222,85 +577,6 @@ const ensureConnectionLocationExists = async (connectionId) => {
         }
     } catch (error) {
         console.error('[ENSURE_CONNECTION] Error ensuring document exists:', error);
-        throw error;
-    }
-};
-
-// NEW: Update specific user location in connection document (efficient array update)
-const updateUserLocationInConnectionDB = async (userId, connectionId, locationData) => {
-    console.log('[UPDATE_USER_LOCATION_DB] Starting database update for user:', userId, 'connection:', connectionId);
-    console.log('[UPDATE_USER_LOCATION_DB] Location data:', locationData);
-
-    try {
-        // Check if ConnectionLocation model is available
-        console.log('[UPDATE_USER_LOCATION_DB] ConnectionLocation model available:', !!ConnectionLocation);
-
-        // Ensure the ConnectionLocation document exists
-        await ensureConnectionLocationExists(connectionId);
-
-        // Use MongoDB's array update operators to update only the specific user
-        console.log('[UPDATE_USER_LOCATION_DB] Executing MongoDB update operation...');
-
-        const updateResult = await ConnectionLocation.updateOne(
-            {
-                connectionId: connectionId,
-                'users.userId': userId
-            },
-            {
-                $set: {
-                    'users.$.currentLocation': {
-                        latitude: locationData.latitude,
-                        longitude: locationData.longitude,
-                        floor: locationData.floor || null,
-                        lastUpdated: new Date(),
-                        online: true
-                    },
-                    'users.$.stats.lastActive': new Date()
-                },
-                $push: {
-                    'users.$.locationHistory': {
-                        $each: [{
-                            latitude: locationData.latitude,
-                            longitude: locationData.longitude,
-                            floor: locationData.floor || null,
-                            timestamp: new Date(),
-                            accuracy: locationData.accuracy || null,
-                            speed: locationData.speed || null,
-                            heading: locationData.heading || null
-                        }],
-                        $slice: -5 // Keep only last 100 entries
-                    }
-                },
-                $inc: {
-                    'users.$.stats.totalLocations': 1,
-                    'connectionStats.totalLocations': 1
-                },
-                $set: {
-                    'connectionStats.lastActivity': new Date()
-                }
-            }
-        );
-
-        console.log('[UPDATE_USER_LOCATION_DB] MongoDB update result:', updateResult);
-        console.log('[UPDATE_USER_LOCATION_DB] Matched count:', updateResult.matchedCount);
-        console.log('[UPDATE_USER_LOCATION_DB] Modified count:', updateResult.modifiedCount);
-
-        // If user doesn't exist in the connection yet, add them
-        if (updateResult.matchedCount === 0) {
-            console.log('[UPDATE_USER_LOCATION_DB] User not found in connection, adding new user...');
-            await addNewUserToConnection(userId, connectionId, locationData);
-        } else {
-            console.log('[UPDATE_USER_LOCATION_DB] User updated successfully, updating connection stats...');
-            // Update connection stats for existing user
-            await updateConnectionStats(connectionId);
-        }
-
-        console.log('[UPDATE_USER_LOCATION_DB] Database update completed successfully for user:', userId);
-
-    } catch (error) {
-        console.error('[UPDATE_USER_LOCATION_DB] Error updating user location:', error);
-        console.error('[UPDATE_USER_LOCATION_DB] Error message:', error.message);
-        console.error('[UPDATE_USER_LOCATION_DB] Error stack:', error.stack);
         throw error;
     }
 };
@@ -395,198 +671,183 @@ const updateConnectionStats = async (connectionId) => {
     }
 };
 
-// Mark user as offline (ENHANCED)
-const markUserOffline = async (userId) => {
+// NEW: Update specific user location in connection document (efficient array update)
+const updateUserLocationInConnectionDB = async (userId, connectionId, locationData) => {
+    console.log('[UPDATE_USER_LOCATION_DB] Starting database update for user:', userId, 'connection:', connectionId);
+    console.log('[UPDATE_USER_LOCATION_DB] Location data:', locationData);
+
     try {
-        // Update memory (keep existing behavior)
-        if (userLocations[userId]) {
-            userLocations[userId].online = false;
-            userLocations[userId].lastUpdated = Date.now();
-        }
+        // Check if ConnectionLocation model is available
+        console.log('[UPDATE_USER_LOCATION_DB] ConnectionLocation model available:', !!ConnectionLocation);
 
-        // NEW: Also update database
-        const connections = await Connection.find({
-            'users.userId': userId,
-            'users.status': 'active',
-            'metadata.status': 'active'
-        });
+        // Ensure the ConnectionLocation document exists
+        await ensureConnectionLocationExists(connectionId);
 
-        for (const connection of connections) {
-            await ConnectionLocation.updateOne(
-                {
-                    connectionId: connection._id,
-                    'users.userId': userId
+        // Use MongoDB's array update operators to update only the specific user
+        console.log('[UPDATE_USER_LOCATION_DB] Executing MongoDB update operation...');
+
+        const updateResult = await ConnectionLocation.updateOne(
+            {
+                connectionId: connectionId,
+                'users.userId': userId
+            },
+            {
+                $set: {
+                    'users.$.currentLocation': {
+                        latitude: locationData.latitude,
+                        longitude: locationData.longitude,
+                        floor: locationData.floor || null,
+                        lastUpdated: new Date(),
+                        online: true
+                    },
+                    'users.$.stats.lastActive': new Date()
                 },
-                {
-                    $set: {
-                        'users.$.currentLocation.online': false,
-                        'users.$.currentLocation.lastUpdated': new Date(),
-                        'users.$.stats.lastActive': new Date()
+                $push: {
+                    'users.$.locationHistory': {
+                        $each: [{
+                            latitude: locationData.latitude,
+                            longitude: locationData.longitude,
+                            floor: locationData.floor || null,
+                            timestamp: new Date(),
+                            accuracy: locationData.accuracy || null,
+                            speed: locationData.speed || null,
+                            heading: locationData.heading || null
+                        }],
+                        $slice: -5 // Keep only last 100 entries
                     }
+                },
+                $inc: {
+                    'users.$.stats.totalLocations': 1,
+                    'connectionStats.totalLocations': 1
+                },
+                $set: {
+                    'connectionStats.lastActivity': new Date()
                 }
-            );
+            }
+        );
 
-            // Update connection stats
-            await updateConnectionStats(connection._id);
+        console.log('[UPDATE_USER_LOCATION_DB] MongoDB update result:', updateResult);
+        console.log('[UPDATE_USER_LOCATION_DB] Matched count:', updateResult.matchedCount);
+        console.log('[UPDATE_USER_LOCATION_DB] Modified count:', updateResult.modifiedCount);
+
+        // If user doesn't exist in the connection yet, add them
+        if (updateResult.matchedCount === 0) {
+            console.log('[UPDATE_USER_LOCATION_DB] User not found in connection, adding new user...');
+            await addNewUserToConnection(userId, connectionId, locationData);
+        } else {
+            console.log('[UPDATE_USER_LOCATION_DB] User updated successfully, updating connection stats...');
+            // Update connection stats for existing user
+            await updateConnectionStats(connectionId);
         }
 
-        return userLocations[userId];
+        console.log('[UPDATE_USER_LOCATION_DB] Database update completed successfully for user:', userId);
 
     } catch (error) {
-        console.error('[MARK_USER_OFFLINE] Database update failed, but memory update succeeded:', error);
-        return userLocations[userId];
+        console.error('[UPDATE_USER_LOCATION_DB] Error updating user location:', error);
+        console.error('[UPDATE_USER_LOCATION_DB] Error message:', error.message);
+        console.error('[UPDATE_USER_LOCATION_DB] Error stack:', error.stack);
+        throw error;
     }
 };
 
-// NEW: Get memory status for debugging and monitoring
-const getMemoryStatus = () => {
-    const now = Date.now();
-    const memoryStats = {
-        totalUsers: Object.keys(userLocations).length,
-        activeUsers: 0,
-        staleUsers: 0,
-        users: []
-    };
+// Update user location in memory AND database (ENHANCED with automatic memory promotion)
+const updateUserLocation = async (userId, locationData, connectionId = null) => {
+    console.log('[UPDATE_USER_LOCATION] Updating location for user:', userId, 'with data:', locationData);
+    console.log('[UPDATE_USER_LOCATION] ConnectionId received:', connectionId);
 
-    Object.keys(userLocations).forEach(userId => {
-        const location = userLocations[userId];
-        if (location && location.lastUpdated) {
-            const timeSinceUpdate = now - location.lastUpdated;
-            const isActive = timeSinceUpdate <= MEMORY_TIMEOUT_MS;
-
-            if (isActive) {
-                memoryStats.activeUsers++;
-            } else {
-                memoryStats.staleUsers++;
-            }
-
-            memoryStats.users.push({
-                userId,
-                lastUpdated: location.lastUpdated,
-                timeSinceUpdate: Math.round(timeSinceUpdate / 1000),
-                isActive,
-                online: location.online || false
-            });
-        }
-    });
-
-    return memoryStats;
-};
-
-// Mark a location (bus station or hotel)
-const markLocation = async (req, res) => {
     try {
-        await createUploadsDirectory();
+        // Check if user was previously in database fallback mode
+        const wasInDatabaseFallback = !userLocations[userId] || !shouldUseMemoryForUser(userId);
 
-        const { connectionId, type, name, latitude, longitude, comment, distance } = req.body;
-        const userId = req.user.id; // Changed from req.user.userId to req.user.id
-
-        // Debug logging
-        console.log('[MARK_LOCATION_BACKEND] Request received:', {
-            connectionId,
-            type,
-            name,
-            latitude,
-            longitude,
-            comment,
-            distance,
-            userId,
-            userFromReq: req.user,
-            body: req.body
-        });
-
-        // Validate required fields
-        if (!connectionId || !type || !name || !latitude || !longitude || !comment) {
-            return res.status(400).json({
-                success: false,
-                message: 'Missing required fields'
-            });
-        }
-
-        // Validate images upload (optional, but if provided, max 1 image)
-        if (req.files && req.files.length > 1) {
-            return res.status(400).json({
-                success: false,
-                message: 'Maximum 1 image allowed'
-            });
-        }
-
-        // Find the connection and verify user is owner
-        const connection = await Connection.findById(connectionId);
-        if (!connection) {
-            return res.status(404).json({
-                success: false,
-                message: 'Connection not found'
-            });
-        }
-
-        console.log('[MARK_LOCATION_BACKEND] Connection found:', {
-            connectionId: connection._id,
-            users: connection.users.map(u => ({ userId: u.userId, role: u.role, status: u.status }))
-        });
-
-        // User validation removed - handled in frontend
-        console.log('[MARK_LOCATION_BACKEND] User validation skipped - handled in frontend');
-
-        // Check if location type already exists
-        const existingLocation = connection.markedLocations?.find(
-            location => location.type === type
-        );
-
-        if (existingLocation) {
-            return res.status(400).json({
-                success: false,
-                message: `A ${type.replace('_', ' ')} has already been marked for this connection`
-            });
-        }
-
-        // Create location object
-        const locationData = {
-            type,
-            name,
-            latitude: parseFloat(latitude),
-            longitude: parseFloat(longitude),
-            comment,
-            distance: parseFloat(distance) || 0,
-            images: req.files.map(file => file.filename),
-            markedBy: userId,
-            markedAt: new Date()
+        // 1. Update in-memory cache (this automatically promotes user back to memory)
+        userLocations[userId] = {
+            ...locationData,
+            lastUpdated: Date.now(),
+            online: true
         };
 
-        // Add location to connection
-        if (!connection.markedLocations) {
-            connection.markedLocations = [];
+        if (wasInDatabaseFallback) {
+            console.log(`[UPDATE_USER_LOCATION] User ${userId} promoted back to memory from database fallback`);
+        } else {
+            console.log(`[UPDATE_USER_LOCATION] User ${userId} updated in memory (was already active)`);
         }
-        connection.markedLocations.push(locationData);
 
-        await connection.save();
+        console.log('[UPDATE_USER_LOCATION] Updated userLocations object:', Object.keys(userLocations));
+        console.log('[UPDATE_USER_LOCATION] User location stored:', userLocations[userId]);
 
-        // Get the saved location (with generated ID)
-        const savedLocation = connection.markedLocations[connection.markedLocations.length - 1];
+        // 2. Update database with connectionId from frontend (more efficient)
+        if (connectionId) {
+            console.log('[UPDATE_USER_LOCATION] Attempting database storage with connectionId:', connectionId);
+            await updateUserLocationInConnectionDB(userId, connectionId, locationData);
+            console.log('[UPDATE_USER_LOCATION] Location stored in database with connectionId:', connectionId);
+        } else {
+            console.log('[UPDATE_USER_LOCATION] No connectionId provided, skipping database storage');
+        }
+
+        // 3. Broadcast location update to all users in the connection via socket
+        if (connectionId && global.io) {
+            try {
+                const broadcastData = {
+                    userId: userId,
+                    latitude: locationData.latitude || locationData.lat,
+                    longitude: locationData.longitude || locationData.lng,
+                    online: true,
+                    lastUpdated: userLocations[userId].lastUpdated,
+                    connectionId: connectionId
+                };
+
+                console.log('[SOCKET_BROADCAST] Broadcasting location update:', broadcastData);
+                console.log('[SOCKET_DEBUG] Global IO instance available:', !!global.io);
+                console.log('[SOCKET_DEBUG] Global IO engine clients count:', global.io?.engine?.clientsCount);
+                global.io.to(`connection:${connectionId}`).emit('locationUpdate', broadcastData);
+                console.log('[SOCKET_BROADCAST] Location update broadcasted successfully');
+            } catch (socketError) {
+                console.error('[SOCKET_BROADCAST] Error broadcasting location update:', socketError);
+            }
+        } else {
+            console.log('[SOCKET_BROADCAST] Skipping broadcast - no connectionId or io not available');
+        }
+
+    } catch (error) {
+        console.error('[UPDATE_USER_LOCATION] Database update failed, but memory update succeeded:', error);
+        console.error('[UPDATE_USER_LOCATION] Error details:', error.message);
+        console.error('[UPDATE_USER_LOCATION] Error stack:', error.stack);
+        // Continue with memory update even if DB fails (backward compatibility)
+    }
+
+    return userLocations[userId];
+};
+
+// Update user location (for real-time tracking)
+const updateUserLocationForRTT = async (req, res) => {
+    try {
+        const { latitude, longitude, connectionId } = req.body;
+        const userId = req.user.id; // Fixed: use req.user.id instead of req.user.userId
+
+        if (!latitude || !longitude) {
+            return res.status(400).json({
+                success: false,
+                message: 'Latitude and longitude are required'
+            });
+        }
+
+        // ENHANCED: Now updates both memory and database
+        const updatedLocation = await updateUserLocation(userId, {
+            latitude: parseFloat(latitude),
+            longitude: parseFloat(longitude),
+            timestamp: Date.now()
+        }, connectionId); // Pass connectionId for database storage
 
         res.json({
             success: true,
-            message: 'Location marked successfully',
-            locationId: savedLocation._id,
-            imageUrls: req.files.map(file => `/uploads/locations/${file.filename}`),
-            location: savedLocation
+            message: 'Location updated successfully',
+            location: updatedLocation
         });
-
     } catch (error) {
-        console.error('[MARK_LOCATION] Error:', error);
-
-        // Clean up uploaded files if there was an error
-        if (req.files && req.files.length > 0) {
-            try {
-                await Promise.all(req.files.map(file => fs.unlink(file.path)));
-            } catch (unlinkError) {
-                console.error('[MARK_LOCATION] Error deleting files:', unlinkError);
-            }
-        }
-
+        console.error('[LOCATION_UPDATE] Error:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to mark location'
+            message: 'Failed to update location'
         });
     }
 };
@@ -754,141 +1015,195 @@ const updateMarkedLocation = async (req, res) => {
     }
 };
 
-// Delete a marked location
+// Delete a marked location (personal or group)
 const deleteMarkedLocation = async (req, res) => {
     try {
         const { locationId } = req.params;
         const userId = req.user.id;
 
-        console.log('[DELETE_LOCATION] Attempting to delete location:', locationId, 'by user:', userId);
+        console.log('[ENHANCED_DELETE_LOCATION] Request received:', {
+            locationId,
+            userId
+        });
 
-        // Validate locationId format
-        if (!locationId || !mongoose.Types.ObjectId.isValid(locationId)) {
-            return res.status(400).json({
+        // Find the location in the database
+        const location = await ConnectionLocation.findById(locationId);
+        if (!location) {
+            return res.status(404).json({
                 success: false,
-                message: 'Invalid location ID format'
+                message: 'Location not found'
             });
         }
 
-        // Find connection containing the location
-        let connection = await Connection.findOne({
-            'markedLocations._id': locationId
-        });
-
-        if (!connection) {
-            console.log('[DELETE_LOCATION] No connection found with location ID:', locationId);
-
-            // Try alternative query approach
-            const allConnections = await Connection.find({});
-            console.log('[DELETE_LOCATION] Checking all connections for location ID:', locationId);
-
-            for (const conn of allConnections) {
-                const foundLocation = conn.markedLocations.find(loc => loc._id.toString() === locationId);
-                if (foundLocation) {
-                    console.log('[DELETE_LOCATION] Found location in connection:', conn._id);
-                    // Use this connection instead
-                    connection = conn;
-                    break;
-                }
-            }
-
-            if (!connection) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Location not found in any connection'
-                });
-            }
-        }
-
-        console.log('[DELETE_LOCATION] Found connection:', connection._id);
-
-        // Find the specific location in the markedLocations array
-        let location = connection.markedLocations.id(locationId);
-        if (!location) {
-            console.log('[DELETE_LOCATIONS] Location not found in connection with ID:', locationId);
-            console.log('[DELETE_LOCATIONS] Available locations:', connection.markedLocations.map(l => ({ id: l._id, type: l.type, name: l.name })));
-
-            // Try alternative approach using find
-            const foundLocation = connection.markedLocations.find(loc => loc._id.toString() === locationId);
-            if (foundLocation) {
-                console.log('[DELETE_LOCATIONS] Found location using find method:', foundLocation);
-                // Use this location instead
-                location = foundLocation;
-            } else {
-                return res.status(404).json({
-                    success: false,
-                    message: 'Location not found in connection'
-                });
-            }
-        }
-
-        console.log('[DELETE_LOCATION] Found location to delete:', {
-            id: location._id,
-            type: location.type,
-            name: location.name
-        });
-
-        // Check if user has permission to delete (must be the one who marked it or connection owner)
-        const isOwner = connection.users.find(u => u.userId.toString() === userId.toString())?.role === 'owner';
-        const isMarker = location.markedBy.toString() === userId.toString();
-
-        if (!isOwner && !isMarker) {
+        // Check if user has permission to delete
+        const canDelete = location.markedBy.toString() === userId.toString();
+        if (!canDelete) {
             return res.status(403).json({
                 success: false,
-                message: 'Access denied: You can only delete locations you marked or are the connection owner'
+                message: 'You can only delete locations you marked'
             });
         }
 
-        const imageFilenames = location.images || [];
+        // Delete the location
+        await ConnectionLocation.findByIdAndDelete(locationId);
 
-        // Remove location from array using pull
-        const result = connection.markedLocations.pull(locationId);
-        console.log('[DELETE_LOCATION] Pull result:', result);
+        // Find the connection to update user cache
+        const connection = await Connection.findOne({
+            'markedLocations.busStation': locationId
+        }) || await Connection.findOne({
+            'markedLocations.hotel': locationId
+        });
 
-        // Alternative approach if pull doesn't work
-        if (!result) {
-            console.log('[DELETE_LOCATION] Pull failed, trying manual removal');
-            const locationIndex = connection.markedLocations.findIndex(loc => loc._id.toString() === locationId);
-            if (locationIndex !== -1) {
-                connection.markedLocations.splice(locationIndex, 1);
-                console.log('[DELETE_LOCATION] Manual removal successful');
-            } else {
-                console.log('[DELETE_LOCATION] Manual removal also failed');
-                return res.status(500).json({
-                    success: false,
-                    message: 'Failed to remove location from connection'
-                });
+        if (connection) {
+            // Update connection's markedLocations
+            if (connection.markedLocations.busStation?.toString() === locationId) {
+                connection.markedLocations.busStation = null;
             }
+            if (connection.markedLocations.hotel?.toString() === locationId) {
+                connection.markedLocations.hotel = null;
+            }
+            await connection.save();
+
+            // Update all users' activeLocations cache
+            await syncAllUsersCache(connection._id);
         }
 
-        // Save the connection
-        await connection.save();
-        console.log('[DELETE_LOCATION] Connection saved after location removal');
-
-        // Delete image files
-        if (imageFilenames.length > 0) {
-            try {
-                await Promise.all(imageFilenames.map(filename =>
-                    fs.unlink(path.join('uploads/locations', filename))
-                ));
-                console.log('[DELETE_LOCATION] Image files deleted successfully');
-            } catch (error) {
-                console.log('[DELETE_LOCATION] Could not delete some image files:', error.message);
-            }
-        }
+        // Update user's activeLocations if it's a personal location
+        await User.updateMany(
+            { 'activeLocations.busStation': locationId },
+            { $unset: { 'activeLocations.busStation': 1 } }
+        );
+        await User.updateMany(
+            { 'activeLocations.hotel': locationId },
+            { $unset: { 'activeLocations.hotel': 1 } }
+        );
 
         res.json({
             success: true,
-            message: 'Location deleted successfully'
+            message: 'Location deleted successfully',
+            locationType: location.type
         });
 
     } catch (error) {
-        console.error('[DELETE_LOCATION] Error:', error);
+        console.error('[ENHANCED_DELETE_LOCATION] Error:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to delete location'
+            message: 'Failed to delete location',
+            error: error.message
         });
     }
+};
+
+// Mark user as offline (ENHANCED)
+const markUserOffline = async (userId) => {
+    try {
+        // Update memory (keep existing behavior)
+        if (userLocations[userId]) {
+            userLocations[userId].online = false;
+            userLocations[userId].lastUpdated = Date.now();
+        }
+
+        // NEW: Also update database
+        const connections = await Connection.find({
+            'users.userId': userId,
+            'users.status': 'active',
+            'metadata.status': 'active'
+        });
+
+        for (const connection of connections) {
+            await ConnectionLocation.updateOne(
+                {
+                    connectionId: connection._id,
+                    'users.userId': userId
+                },
+                {
+                    $set: {
+                        'users.$.currentLocation.online': false,
+                        'users.$.currentLocation.lastUpdated': new Date(),
+                        'users.$.stats.lastActive': new Date()
+                    }
+                }
+            );
+
+            // Update connection stats
+            await updateConnectionStats(connection._id);
+        }
+
+        return userLocations[userId];
+
+    } catch (error) {
+        console.error('[MARK_USER_OFFLINE] Database update failed, but memory update succeeded:', error);
+        return userLocations[userId];
+    }
+};
+
+// Mark user as offline
+const markOfflineUser = (req, res) => {
+    try {
+        const userId = req.user.id; // Fixed: use req.user.id instead of req.user.userId
+        const updatedLocation = locationController.markUserOffline(userId);
+
+        res.json({
+            success: true,
+            message: 'User marked as offline',
+            location: updatedLocation
+        });
+    } catch (error) {
+        console.error('[OFFLINE_ROUTE] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to mark user as offline'
+        });
+    }
+};
+
+// NEW: Get user location with intelligent source selection
+const getUserLocationWithFallback = async (userId) => {
+    // First check if user has fresh data in memory
+    if (shouldUseMemoryForUser(userId)) {
+        console.log(`[LOCATION_SOURCE] User ${userId} using memory (fresh data)`);
+        return {
+            location: userLocations[userId],
+            source: 'memory',
+            isStale: false
+        };
+    }
+
+    // If not in memory or stale, try database
+    try {
+        const connectionLocation = await ConnectionLocation.findOne({
+            'users.userId': userId
+        });
+
+        if (connectionLocation) {
+            const userInConnection = connectionLocation.users.find(
+                user => user.userId.toString() === userId
+            );
+
+            if (userInConnection && userInConnection.currentLocation) {
+                const dbLocation = userInConnection.currentLocation;
+                const isStale = Date.now() - new Date(dbLocation.lastUpdated).getTime() > MEMORY_TIMEOUT_MS;
+
+                console.log(`[LOCATION_SOURCE] User ${userId} using database (${isStale ? 'stale' : 'recent'} data)`);
+                return {
+                    location: {
+                        latitude: dbLocation.latitude,
+                        longitude: dbLocation.longitude,
+                        floor: dbLocation.floor,
+                        lastUpdated: dbLocation.lastUpdated,
+                        online: dbLocation.online
+                    },
+                    source: 'database',
+                    isStale: isStale
+                };
+            }
+        }
+    } catch (dbError) {
+        console.log(`[LOCATION_SOURCE] Database lookup failed for user ${userId}:`, dbError.message);
+    }
+
+    console.log(`[LOCATION_SOURCE] User ${userId} no location data found`);
+    return null;
 };
 
 // Get all user locations in a group connection (ENHANCED with hybrid data)
@@ -1011,6 +1326,46 @@ const getGroupLocations = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch group locations'
+        });
+    }
+};
+
+// Test endpoint to check database connectivity and model
+const testDB = async (req, res) => {
+    try {
+        const { ConnectionLocation } = require('../models/Location');
+
+        // Test basic model functionality
+        const testResult = {
+            modelExists: !!ConnectionLocation,
+            modelName: ConnectionLocation?.modelName,
+            modelType: typeof ConnectionLocation,
+            timestamp: new Date().toISOString()
+        };
+
+        // Test database connection by counting documents
+        if (ConnectionLocation) {
+            try {
+                const count = await ConnectionLocation.countDocuments();
+                testResult.documentCount = count;
+                testResult.databaseConnected = true;
+            } catch (dbError) {
+                testResult.databaseConnected = false;
+                testResult.databaseError = dbError.message;
+            }
+        }
+
+        res.json({
+            success: true,
+            message: 'Database test completed',
+            result: testResult
+        });
+    } catch (error) {
+        console.error('[TEST_DB] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Database test failed',
+            error: error.message
         });
     }
 };
@@ -1202,18 +1557,121 @@ const getUserLocation = async (req, res) => {
     }
 };
 
+// NEW: Get memory status for debugging and monitoring 
+const getMemoryStatus = () => {
+    const now = Date.now();
+    const memoryStats = {
+        totalUsers: Object.keys(userLocations).length,
+        activeUsers: 0,
+        staleUsers: 0,
+        users: []
+    };
+
+    Object.keys(userLocations).forEach(userId => {
+        const location = userLocations[userId];
+        if (location && location.lastUpdated) {
+            const timeSinceUpdate = now - location.lastUpdated;
+            const isActive = timeSinceUpdate <= MEMORY_TIMEOUT_MS;
+
+            if (isActive) {
+                memoryStats.activeUsers++;
+            } else {
+                memoryStats.staleUsers++;
+            }
+
+            memoryStats.users.push({
+                userId,
+                lastUpdated: location.lastUpdated,
+                timeSinceUpdate: Math.round(timeSinceUpdate / 1000),
+                isActive,
+                online: location.online || false
+            });
+        }
+    });
+
+    return memoryStats;
+};
+
+// NEW: Get memory status for debugging and monitoring
+const getMemoryStatusApi = (req, res) => {
+    try {
+        const memoryStats = locationController.getMemoryStatus();
+        res.json({
+            success: true,
+            message: 'Memory status retrieved successfully',
+            memoryStats,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('[MEMORY_STATUS] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get memory status',
+            error: error.message
+        });
+    }
+};
+
+// Enhanced memory cleanup function to remove only stale user data (uses in server.js)
+const cleanupStaleMemoryLocations = () => {
+    const now = Date.now();
+    let cleanedCount = 0;
+    let activeUsers = 0;
+
+    Object.keys(userLocations).forEach(userId => {
+        const location = userLocations[userId];
+        if (location && location.lastUpdated) {
+            const timeSinceUpdate = now - location.lastUpdated;
+
+            if (timeSinceUpdate > MEMORY_TIMEOUT_MS) {
+                // Only remove users who haven't sent updates in 2+ minutes
+                delete userLocations[userId];
+                cleanedCount++;
+                console.log(`[MEMORY_CLEANUP] Cleaned stale location for user ${userId} (${Math.round(timeSinceUpdate / 1000)}s old)`);
+            } else {
+                activeUsers++;
+                console.log(`[MEMORY_CLEANUP] User ${userId} still active (${Math.round(timeSinceUpdate / 1000)}s since last update)`);
+            }
+        }
+    });
+
+    if (cleanedCount > 0) {
+        console.log(`[MEMORY_CLEANUP] Total cleaned: ${cleanedCount} stale entries, ${activeUsers} active users remain`);
+    } else {
+        console.log(`[MEMORY_CLEANUP] No stale entries found, ${activeUsers} active users in memory`);
+    }
+};
+
+// Get all user locations from memory (uses in meshController)
+const getUserLocations = () => {
+    return userLocations;
+};
+
+
+
 module.exports = {
-    markLocation,
-    getMarkedLocations,
-    updateMarkedLocation,
-    deleteMarkedLocation,
-    getUserLocations,
-    updateUserLocation,
-    markUserOffline,
-    getGroupLocations,
-    getUserLocation,
-    getConnectionLocationHistory,
-    cleanupOldLocations,
-    cleanupStaleMemoryLocations,
-    getMemoryStatus
+    markLocation, // use in router  
+    getMarkedLocations, // use in router
+    handleOwnershipTransfer, // use in router
+    syncAllUsersCache, // use in api
+    getActiveLocationsForUser, // use in api
+    getMarkedLocationEnhanced, // use in router
+    updateMarkedLocation, // route
+    deleteMarkedLocation, // use in router
+    getUserLocations, // mesh
+    updateUserLocation, // use in router api
+    updateUserLocationForRTT,
+    markUserOffline,  // use in router api
+    markOfflineUser,
+    getGroupLocations,  // route
+    getUserLocation, // route
+    getConnectionLocationHistory, // route
+    cleanupOldLocations, // route
+    cleanupStaleMemoryLocations, // use in server.js
+    shouldUseMemoryForUser, // use in a api
+    getUserLocationWithFallback, // use in a api
+    getMemoryStatus, // use in a router api
+    getMemoryStatusApi,
+    testDB,
+
 };

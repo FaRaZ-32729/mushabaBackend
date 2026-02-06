@@ -12,7 +12,7 @@ const storage = multer.diskStorage({
     }
 });
 
-const uploadLocation = multer({
+const uploadForLocation = multer({
     storage: storage,
     limits: {
         fileSize: 5 * 1024 * 1024, // 5MB limit
@@ -26,4 +26,4 @@ const uploadLocation = multer({
     }
 });
 
-module.exports = uploadLocation;
+module.exports = uploadForLocation;
