@@ -9,6 +9,10 @@ const uploadRoutes = require("./uploadRoutes");
 const locationRoutes = require("./locationRoutes");
 const pinLocationRoutes = require("./pinLocationRoutes");
 const personalPinLocationRoutes = require("./personalPinLocationRoutes");
+const meshRoutes = require("./meshRoutes");
+const speechRoute = require("./speechRoute");
+const translateRoutes = require("./translateRoutes");
+const ttsRoutes = require("./ttsRoutes");
 
 const router = express.Router();
 
@@ -22,5 +26,11 @@ router.use("/upload", uploadRoutes);
 router.use("/location", locationRoutes);
 router.use("/pin-locations", pinLocationRoutes);
 router.use("/personal-pin-locations", personalPinLocationRoutes);
+console.warn('[SERVER_DEBUG] Personal pin location routes registered at /api/personal-pin-locations');
+console.warn('🚀🚀🚀 PERSONAL PIN LOCATION ROUTES ARE LOADED! 🚀🚀🚀');
+router.use("/mesh", meshRoutes);
+router.use("/stt", speechRoute);
+router.use("/translate", translateRoutes);
+router.use("/tts", ttsRoutes);
 
 module.exports = router;
