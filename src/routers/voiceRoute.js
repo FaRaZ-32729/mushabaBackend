@@ -1,5 +1,5 @@
 const express = require('express');
-const transcribeAudio = require('../controllers/speechController');
+const transcribeAudio = require('../controllers/voiceController');
 
 const router = express.Router();
 router.use(express.json({ limit: '20mb' }));

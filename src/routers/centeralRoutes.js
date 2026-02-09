@@ -10,10 +10,16 @@ const locationRoutes = require("./locationRoutes");
 const pinLocationRoutes = require("./pinLocationRoutes");
 const personalPinLocationRoutes = require("./personalPinLocationRoutes");
 const meshRoutes = require("./meshRoutes");
-const speechRoute = require("./speechRoute");
+const voiceRoute = require("./voiceRoute");
 const translateRoutes = require("./translateRoutes");
 const ttsRoutes = require("./ttsRoutes");
 const pipelineRoutes = require("./pipelineRoutes");
+const geminiChatRoutes = require("./geminiChatRoutes");
+const speechRoutes = require("./speechRoutes");
+const userMarkedLocationsRoutes = require("./userMarkedLocationsRoutes");
+const connectionMarkedLocationsRoutes = require("./connectionMarkedLocationsRoutes");
+const busHotelLocationRoutes = require("./busHotelLocationRoutes");
+const verificationRoutes = require("./verificationRoutes");
 
 const router = express.Router();
 
@@ -30,9 +36,16 @@ router.use("/personal-pin-locations", personalPinLocationRoutes);
 console.warn('[SERVER_DEBUG] Personal pin location routes registered at /api/personal-pin-locations');
 console.warn('🚀🚀🚀 PERSONAL PIN LOCATION ROUTES ARE LOADED! 🚀🚀🚀');
 router.use("/mesh", meshRoutes);
-router.use("/stt", speechRoute);
+router.use("/stt", voiceRoute);
 router.use("/translate", translateRoutes);
 router.use("/tts", ttsRoutes);
 router.use("/pipeline", pipelineRoutes);
+router.use("/gemini", geminiChatRoutes);
+console.warn('[SERVER_DEBUG] Gemini routes mounted at /api/gemini');
+router.use("/speech", speechRoutes);
+router.use("/user-marked-locations", userMarkedLocationsRoutes);
+router.use("/connection-marked-locations", connectionMarkedLocationsRoutes);
+router.use("/bus-hotel-locations", busHotelLocationRoutes);
+router.use("/verification", verificationRoutes);
 
 module.exports = router;
