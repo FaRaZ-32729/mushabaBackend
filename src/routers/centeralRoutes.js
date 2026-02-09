@@ -20,6 +20,7 @@ const userMarkedLocationsRoutes = require("./userMarkedLocationsRoutes");
 const connectionMarkedLocationsRoutes = require("./connectionMarkedLocationsRoutes");
 const busHotelLocationRoutes = require("./busHotelLocationRoutes");
 const verificationRoutes = require("./verificationRoutes");
+const qrUsersRoutes = require("./qrUsersRoutes");
 
 const router = express.Router();
 
@@ -47,5 +48,6 @@ router.use("/user-marked-locations", userMarkedLocationsRoutes);
 router.use("/connection-marked-locations", connectionMarkedLocationsRoutes);
 router.use("/bus-hotel-locations", busHotelLocationRoutes);
 router.use("/verification", verificationRoutes);
+router.use("/qr-users", qrUsersRoutes);
 
 module.exports = router;

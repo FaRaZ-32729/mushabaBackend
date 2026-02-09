@@ -8,10 +8,11 @@ const connectionUpdateService = require('../services/connectionUpdateService');
 const mongoose = require('mongoose');
 
 
+
 // Import the WebSocket service for real-time notifications
 console.log('[SOCKET_DEBUG] Importing WebSocket service...');
 
-const webSocketService = require('../services/webSocketService');
+const webSocketService = require('../services/websocketService');
 
 console.log('[SOCKET_DEBUG] WebSocket service imported:', !!webSocketService);
 

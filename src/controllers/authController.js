@@ -1,6 +1,8 @@
 const bcrypt = require('bcryptjs');
 const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/userSchema");
+const Chat = require('../models/chatSchema');
+
 
 require("dotenv").config();
 
@@ -107,7 +109,6 @@ const registerByGoogle = async (req, res) => {
 
             // Create personal chat for the new Google user
             try {
-                const Chat = require('../models/Chat');
                 const personalChat = new Chat({
                     type: 'personal',
                     participants: [{
@@ -212,7 +213,6 @@ const register = async (req, res) => {
 
         // Create personal chat for the new user
         try {
-            const Chat = require('../models/Chat');
             const personalChat = new Chat({
                 type: 'personal',
                 participants: [{
