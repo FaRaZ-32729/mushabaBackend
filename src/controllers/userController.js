@@ -3,6 +3,7 @@ const QRCode = require('qrcode');
 const Connection = require('../models/connectionSchema');
 const { createNotification } = require('./notificationController');
 const User = require("../models/userSchema");
+const emailVerificationService = require('../services/emailVerificationService');
 
 // Get all users
 const getAllUsers = async (req, res) => {
@@ -204,8 +205,6 @@ const deleteUser = async (req, res) => {
                 });
             }
 
-            // Import email verification service
-            const emailVerificationService = require('../services/emailVerificationService');
 
             const isValidCode = emailVerificationService.verifyCode(
                 user.verificationCode,

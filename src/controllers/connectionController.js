@@ -4,15 +4,20 @@ const User = require('../models/userSchema');
 const Connection = require('../models/connectionSchema');
 const Notification = require('../models/notificationSchema');
 const ActivityLog = require('../models/activityLogSchema');
-const connectionUpdateService = require('../services/connectionUpdateService');
 const mongoose = require('mongoose');
+const PinLocation = require('../models/pinLocationSchema');
+const { ConnectionLocation } = require('../models/locationSchema');
+const Chat = require('../models/chatSchema');
+const Message = require('../models/messageSchema');
+const connectionUpdateService = require('../services/connectionUpdateService');
+const emailVerificationService = require('../services/emailVerificationService');
 
 
 
 // Import the WebSocket service for real-time notifications
 console.log('[SOCKET_DEBUG] Importing WebSocket service...');
 
-const webSocketService = require('../services/websocketService');
+const webSocketService = require('../services/webSocketService');
 
 console.log('[SOCKET_DEBUG] WebSocket service imported:', !!webSocketService);
 
@@ -156,7 +161,6 @@ const createConnection = async (req, res) => {
 
                     // Add user to existing group chat
                     try {
-                        const Chat = require('../models/Chat');
                         const existingGroupChat = await Chat.findOne({
                             type: 'group',
                             'metadata.connectionId': currentUserConnection._id
@@ -541,7 +545,6 @@ const createConnection = async (req, res) => {
 
             // Create group chat for the new connection
             try {
-                const Chat = require('../models/Chat');
                 const newGroupChat = new Chat({
                     type: 'group',
                     participants: [
@@ -701,24 +704,20 @@ const removeUser = async (req, res) => {
             try {
                 console.log(`[CONNECTION_CLEANUP] Starting comprehensive cleanup for connection: ${connectionId}`);
                 // 1. Delete PinLocations (connection-specific only)
-                const PinLocation = require('../models/PinLocation');
                 const deletedPinLocations = await PinLocation.deleteMany({ connectionId: connectionId });
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedPinLocations.deletedCount} PinLocations`);
 
                 // 2. Delete ConnectionLocations (marked locations)
-                const { ConnectionLocation } = require('../models/Location');
                 const deletedConnectionLocations = await ConnectionLocation.deleteMany({ connectionId: connectionId });
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedConnectionLocations.deletedCount} ConnectionLocations`);
 
                 // 3. Find and delete Messages from group chat BEFORE deleting the chat
-                const Chat = require('../models/Chat');
                 const groupChat = await Chat.findOne({
                     type: 'group',
                     'metadata.connectionId': connectionId
                 });
 
                 if (groupChat) {
-                    const Message = require('../models/Message');
                     const deletedMessages = await Message.deleteMany({ chatId: groupChat._id });
                     console.log(`[CONNECTION_CLEANUP] Deleted ${deletedMessages.deletedCount} Messages from group chat`);
                 }
@@ -737,7 +736,6 @@ const removeUser = async (req, res) => {
                     const privateChatIds = privateChats.map(chat => chat._id);
 
                     // 4.1. Delete messages from private chats FIRST
-                    const Message = require('../models/Message');
                     const deletedPrivateMessages = await Message.deleteMany({
                         chatId: { $in: privateChatIds }
                     });
@@ -765,7 +763,6 @@ const removeUser = async (req, res) => {
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedNotifications.deletedCount} Notifications`);
 
                 // 8. Clean User references (remove connectionId from user documents)
-                const User = require('../models/User');
                 const updatedUsers = await User.updateMany(
                     {
                         $or: [
@@ -844,7 +841,6 @@ const removeUser = async (req, res) => {
 
         // Remove user from associated group chat
         try {
-            const Chat = require('../models/Chat');
             const groupChat = await Chat.findOne({
                 type: 'group',
                 'metadata.connectionId': connectionId
@@ -1185,7 +1181,6 @@ const removeConnection = async (req, res) => {
 
         // Delete associated group chat
         try {
-            const Chat = require('../models/Chat');
             const groupChat = await Chat.findOne({
                 type: 'group',
                 'metadata.connectionId': connectionId
@@ -1205,24 +1200,20 @@ const removeConnection = async (req, res) => {
             console.log(`[CONNECTION_CLEANUP] Starting comprehensive cleanup for connection: ${connectionId}`);
 
             // 1. Delete PinLocations (connection-specific only)
-            const PinLocation = require('../models/PinLocation');
             const deletedPinLocations = await PinLocation.deleteMany({ connectionId: connectionId });
             console.log(`[CONNECTION_CLEANUP] Deleted ${deletedPinLocations.deletedCount} PinLocations`);
 
             // 2. Delete ConnectionLocations (marked locations)
-            const { ConnectionLocation } = require('../models/Location');
             const deletedConnectionLocations = await ConnectionLocation.deleteMany({ connectionId: connectionId });
             console.log(`[CONNECTION_CLEANUP] Deleted ${deletedConnectionLocations.deletedCount} ConnectionLocations`);
 
             // 3. Find and delete Messages from group chat BEFORE deleting the chat
-            const Chat = require('../models/Chat');
             const groupChat = await Chat.findOne({
                 type: 'group',
                 'metadata.connectionId': connectionId
             });
 
             if (groupChat) {
-                const Message = require('../models/Message');
                 const deletedMessages = await Message.deleteMany({ chatId: groupChat._id });
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedMessages.deletedCount} Messages from group chat`);
             }
@@ -1241,7 +1232,6 @@ const removeConnection = async (req, res) => {
                 const privateChatIds = privateChats.map(chat => chat._id);
 
                 // 4.1. Delete messages from private chats FIRST
-                const Message = require('../models/Message');
                 const deletedPrivateMessages = await Message.deleteMany({
                     chatId: { $in: privateChatIds }
                 });
@@ -1269,7 +1259,6 @@ const removeConnection = async (req, res) => {
             console.log(`[CONNECTION_CLEANUP] Deleted ${deletedNotifications.deletedCount} Notifications`);
 
             // 8. Clean User references (remove connectionId from user documents)
-            const User = require('../models/User');
             const updatedUsers = await User.updateMany(
                 {
                     $or: [
@@ -1537,7 +1526,6 @@ const handleConnectionRequest = async (req, res) => {
 
                 // Add user to existing group chat
                 try {
-                    const Chat = require('../models/Chat');
                     const existingGroupChat = await Chat.findOne({
                         type: 'group',
                         'metadata.connectionId': connection._id
@@ -1879,24 +1867,20 @@ const leaveConnection = async (req, res) => {
                 console.log(`[CONNECTION_CLEANUP] Starting comprehensive cleanup for connection: ${connectionId}`);
 
                 // 1. Delete PinLocations (connection-specific only)
-                const PinLocation = require('../models/PinLocation');
                 const deletedPinLocations = await PinLocation.deleteMany({ connectionId: connectionId });
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedPinLocations.deletedCount} PinLocations`);
 
                 // 2. Delete ConnectionLocations (marked locations)
-                const { ConnectionLocation } = require('../models/Location');
                 const deletedConnectionLocations = await ConnectionLocation.deleteMany({ connectionId: connectionId });
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedConnectionLocations.deletedCount} ConnectionLocations`);
 
                 // 3. Find and delete Messages from group chat BEFORE deleting the chat
-                const Chat = require('../models/Chat');
                 const groupChat = await Chat.findOne({
                     type: 'group',
                     'metadata.connectionId': connectionId
                 });
 
                 if (groupChat) {
-                    const Message = require('../models/Message');
                     const deletedMessages = await Message.deleteMany({ chatId: groupChat._id });
                     console.log(`[CONNECTION_CLEANUP] Deleted ${deletedMessages.deletedCount} Messages from group chat`);
                 }
@@ -1915,7 +1899,6 @@ const leaveConnection = async (req, res) => {
                     const privateChatIds = privateChats.map(chat => chat._id);
 
                     // 4.1. Delete messages from private chats FIRST
-                    const Message = require('../models/Message');
                     const deletedPrivateMessages = await Message.deleteMany({
                         chatId: { $in: privateChatIds }
                     });
@@ -1943,7 +1926,6 @@ const leaveConnection = async (req, res) => {
                 console.log(`[CONNECTION_CLEANUP] Deleted ${deletedNotifications.deletedCount} Notifications`);
 
                 // 8. Clean User references (remove connectionId from user documents)
-                const User = require('../models/User');
                 const updatedUsers = await User.updateMany(
                     {
                         $or: [
@@ -2031,7 +2013,6 @@ const leaveConnection = async (req, res) => {
 
         // Remove user from associated group chat
         try {
-            const Chat = require('../models/Chat');
             const groupChat = await Chat.findOne({
                 type: 'group',
                 'metadata.connectionId': connectionId
@@ -2218,7 +2199,6 @@ const getUserWithTime = async (req, res) => {
         }
 
         // Get connection users with timestamps
-        const connectionUpdateService = require('../services/connectionUpdateService');
         const users = await connectionUpdateService.getConnectionUsersWithTimestamps(connectionId);
 
         res.json({
@@ -2409,8 +2389,6 @@ const transferOwnership = async (req, res) => {
                 });
             }
 
-            // Import email verification service
-            const emailVerificationService = require('../services/emailVerificationService');
 
             const isValidCode = emailVerificationService.verifyCode(
                 currentUserDoc.verificationCode,

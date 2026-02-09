@@ -2,7 +2,7 @@ const PinLocation = require('../models/pinLocationSchema');
 const Connection = require('../models/connectionSchema');
 const User = require('../models/userSchema');
 const { ConnectionLocation } = require('../models/locationSchema');
-const webSocketService = require('./websocketService');
+const webSocketService = require('./webSocketService');
 
 class CleanupService {
     constructor() {

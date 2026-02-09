@@ -1333,7 +1333,6 @@ const getGroupLocations = async (req, res) => {
 // Test endpoint to check database connectivity and model
 const testDB = async (req, res) => {
     try {
-        const { ConnectionLocation } = require('../models/Location');
 
         // Test basic model functionality
         const testResult = {

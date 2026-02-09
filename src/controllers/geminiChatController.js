@@ -4,6 +4,7 @@ const User = require('../models/userSchema');
 const Connection = require('../models/connectionSchema');
 const ActivityLog = require('../models/activityLogSchema');
 const { classifyQuery, handleSimpleQuery } = require('../services/geminiQueryServices');
+const { ConnectionLocation } = require('../models/locationSchema');
 
 
 
@@ -143,7 +144,6 @@ const gemeniChat = async (req, res) => {
         if (activeConnection && activeConnection._id) {
             try {
                 console.warn('[GEMINI_DEBUG] Fetching member locations for connection:', activeConnection._id);
-                const { ConnectionLocation } = require('../models/Location');
                 // Don't populate userId - we'll get names from activeConnection instead
                 const connectionLocation = await ConnectionLocation.findOne({
                     connectionId: activeConnection._id

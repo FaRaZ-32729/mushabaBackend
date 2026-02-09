@@ -1,4 +1,5 @@
 const Notification = require('../models/notificationSchema');
+const webSocketService = require('../services/webSocketService');
 const mongoose = require('mongoose');
 
 // Get user notifications
@@ -195,7 +196,6 @@ const createNotification = async (userId, type, message, data = {}) => {
         try {
             console.log('[NOTIFICATION_DEBUG] Attempting to emit real-time notification...');
             // Import WebSocket service directly
-            const webSocketService = require('../services/websocketService');
             console.log('[NOTIFICATION_DEBUG] WebSocket service imported:', !!webSocketService);
 
             if (webSocketService && webSocketService.emitNotificationToUser) {
