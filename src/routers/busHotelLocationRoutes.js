@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
     getLocations,
-    markLocation,
+    markBussOrHotelLocation,
     markPersonalLocation,
     removeLocation,
     removePersonalLocation,
@@ -40,7 +40,7 @@ router.get('/:connectionId', protect, getLocations);
 // @route   POST /api/bus-hotel-locations/:connectionId/mark
 // @desc    Mark a location (bus or hotel)
 // @access  Private
-router.post('/:connectionId/mark', protect, markLocation);
+router.post('/:connectionId/mark', protect, markBussOrHotelLocation);
 
 // @route   POST /api/bus-hotel-locations/:connectionId/remove
 // @desc    Remove a location (bus or hotel)

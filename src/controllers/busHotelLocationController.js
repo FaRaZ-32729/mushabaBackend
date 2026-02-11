@@ -96,7 +96,7 @@ const getLocations = async (req, res) => {
 };
 
 // Mark a location (bus or hotel)
-const markLocation = async (req, res) => {
+const markBussOrHotelLocation = async (req, res) => {
     try {
         const { connectionId } = req.params;
         const { type, scope, locationData } = req.body;
@@ -764,7 +764,7 @@ const removePersonalLocation = async (req, res) => {
 module.exports = {
     getLocations,
     getPersonalLocations,
-    markLocation,
+    markBussOrHotelLocation,
     markPersonalLocation,
     removeLocation,
     removePersonalLocation,
