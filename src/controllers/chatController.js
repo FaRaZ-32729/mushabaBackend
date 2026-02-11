@@ -481,6 +481,7 @@ const newMessage = async (req, res) => {
     try {
         const { type, content, metadata, replyTo } = req.body;
         const senderId = req.user.id;
+        console.log(">>>>>>>>>>>>>>>>>>>>>>>new message created")
 
         console.log('Sending message - Type:', type, 'Chat ID:', req.params.chatId);
 

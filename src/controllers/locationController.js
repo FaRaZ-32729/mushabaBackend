@@ -752,8 +752,8 @@ const updateUserLocationInConnectionDB = async (userId, connectionId, locationDa
 
 // Update user location in memory AND database (ENHANCED with automatic memory promotion)
 const updateUserLocation = async (userId, locationData, connectionId = null) => {
-    console.log('[UPDATE_USER_LOCATION] Updating location for user:', userId, 'with data:', locationData);
-    console.log('[UPDATE_USER_LOCATION] ConnectionId received:', connectionId);
+    // console.log('[UPDATE_USER_LOCATION] Updating location for user:', userId, 'with data:', locationData);
+    // console.log('[UPDATE_USER_LOCATION] ConnectionId received:', connectionId);
 
     try {
         // Check if user was previously in database fallback mode
@@ -772,8 +772,8 @@ const updateUserLocation = async (userId, locationData, connectionId = null) => 
             console.log(`[UPDATE_USER_LOCATION] User ${userId} updated in memory (was already active)`);
         }
 
-        console.log('[UPDATE_USER_LOCATION] Updated userLocations object:', Object.keys(userLocations));
-        console.log('[UPDATE_USER_LOCATION] User location stored:', userLocations[userId]);
+        // console.log('[UPDATE_USER_LOCATION] Updated userLocations object:', Object.keys(userLocations));
+        // console.log('[UPDATE_USER_LOCATION] User location stored:', userLocations[userId]);
 
         // 2. Update database with connectionId from frontend (more efficient)
         if (connectionId) {
@@ -1504,6 +1504,8 @@ const getUserLocation = async (req, res) => {
     try {
         const { userId: targetUserId } = req.params;
         const currentUserId = req.user.id;
+        console.log(targetUserId, " 🚀🚀 faraz are you getting targetuserid")
+        console.log(currentUserId, " 🚀🚀🚀 faraz are you getting currentUserId")
 
         console.log('[USER_LOCATION] Fetching location for user:', targetUserId, 'by user:', currentUserId);
 

@@ -9,12 +9,20 @@ const centeralRoutes = require("./src/routers/centeralRoutes");
 const qrUsersController = require('./src/controllers/qrUsersController');
 const cleanupService = require("./src/services/cleanupService");
 const locationController = require('./src/controllers/locationController');
+const webSocketService = require("./src/services/webSocketService");
 
 
 DB_Connection();
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 5000;
+
+
+// Initialize WebSocket service
+webSocketService.initialize(server);
+
+// Make WebSocket service available to routes
+app.set('io', webSocketService.io);
 
 
 // Default Middlewares
@@ -53,6 +61,6 @@ startMemoryCleanup();
 
 
 // Server 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`MUSHABA Server is running on port : ${PORT}`);
 })

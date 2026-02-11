@@ -4,10 +4,13 @@ const mongoose = require('mongoose');
 
 // Get user notifications
 const getNotifications = async (req, res) => {
+    console.log(" ✅ logged user in get notification controller 🚀🚀🚀",req.user)
     try {
         const notifications = await Notification.find({ userId: req.user.id })
             .sort({ createdAt: -1 })
             .limit(50);
+
+        console.log(">>>>>>>>> hellow faraz now i am getting notifications correctly")
 
         res.json({
             success: true,

@@ -24,6 +24,7 @@ const qrUsersRoutes = require("./qrUsersRoutes");
 
 const router = express.Router();
 
+// Routes
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
 router.use("/connections", connectionRoutes);

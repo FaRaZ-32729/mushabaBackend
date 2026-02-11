@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/userSchema');
 const Connection = require('../models/connectionSchema');
 const Chat = require('../models/chatSchema');
+require("dotenv").config();
 const { ConnectionLocation } = require('../models/locationSchema');
 const connectionUpdateService = require('../services/connectionUpdateService');
 
@@ -462,6 +463,7 @@ class WebSocketService {
                 }
 
                 // Get updated connection data
+                const connectionUpdateService = require('../services/connectionUpdateService');
                 const connectionUsers = await connectionUpdateService.getConnectionUsersWithTimestamps(connectionId);
 
                 socket.emit('connectionUpdateReceived', {
@@ -509,6 +511,7 @@ class WebSocketService {
                 }
 
                 // Get updated connection data
+                const connectionUpdateService = require('../services/connectionUpdateService');
                 const connectionUsers = await connectionUpdateService.getConnectionUsersWithTimestamps(connectionId);
 
                 // Broadcast MainScreen-specific update to all users in the connection
@@ -799,6 +802,7 @@ class WebSocketService {
 
                 if (userInConnection) {
                     // Update connection location status
+                    const { ConnectionLocation } = require('../models/locationSchema');
                     if (ConnectionLocation) {
                         await ConnectionLocation.findOneAndUpdate(
                             { connectionId: connection._id, 'users.userId': userId },
